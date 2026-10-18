@@ -20,9 +20,13 @@ function Pre(props: any) {
     <div className="code">
       <button
         onClick={() => {
-          navigator.clipboard.writeText(ref.current?.innerText || "");
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
+          navigator.clipboard
+            ?.writeText(ref.current?.innerText || "")
+            .then(() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            })
+            .catch(() => {});
         }}
       >
         {copied ? "Copied" : "Copy"}
@@ -43,8 +47,15 @@ export default function Home() {
   const [embed, setEmbed] = useState(false);
   const end = useRef<HTMLDivElement>(null);
 
-  useEffect(() => setEmbed(new URLSearchParams(location.search).has("embed")), []);
-  useEffect(() => end.current?.scrollIntoView({ behavior: "smooth" }), [msgs, loading]);
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setEmbed(new URLSearchParams(window.location.search).has("embed"));
+    }
+  }, []);
+
+  useEffect(() => {
+    end.current?.scrollIntoView({ behavior: "smooth" });
+  }, [msgs, loading]);
 
   async function ask(q: string) {
     q = q.trim();
