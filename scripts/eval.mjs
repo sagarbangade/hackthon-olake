@@ -34,5 +34,6 @@ for (const [i, [q, words]] of tests.entries()) {
   if (!missing.length) passed++;
   console.log(`${missing.length ? "FAIL" : "ok  "} #${i + 1} ${Date.now() - t}ms ${missing.length ? "missing: " + missing.join(", ") : ""}`);
   if (missing.length || process.env.VERBOSE) console.log("   ", answer.replace(/\n/g, " ").slice(0, 300), sources);
+  await new Promise((r) => setTimeout(r, 1000));
 }
 console.log(`\n${passed}/${tests.length} passed`);
