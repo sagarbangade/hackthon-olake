@@ -94,3 +94,37 @@ for (const [kind, file] of pages) {
 
 fs.writeFileSync("data/chunks.json", JSON.stringify(chunks));
 console.log(`${pages.length} pages -> ${chunks.length} chunks`);
+
+// ---- upload to qdrant (embeddings are made by qdrant cloud inference) ----
+const { QDRANT_URL, QDRANT_API_KEY } = process.env;
+const COLLECTION = "olake_docs";
+
+async function qdrant(method, url, body) {
+  const res = await fetch(QDRANT_URL + url, {
+    method,
+    headers: { "api-key": QDRANT_API_KEY, "content-type": "application/json" },
+    body: body && JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`qdrant ${method} ${url}: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+if (QDRANT_URL) {
+  await qdrant("DELETE", `/collections/${COLLECTION}`).catch(() => {});
+  await qdrant("PUT", `/collections/${COLLECTION}`, {
+    vectors: { dense: { size: 384, distance: "Cosine" } },
+    sparse_vectors: { bm25: { modifier: "idf" } },
+  });
+  for (let i = 0; i < chunks.length; i += 64) {
+    const points = chunks.slice(i, i + 64).map((c) => ({
+      id: c.id,
+      vector: {
+        dense: { text: c.text, model: "sentence-transformers/all-minilm-l6-v2" },
+        bm25: { text: c.text, model: "qdrant/bm25" },
+      },
+      payload: { url: c.url, title: c.title, text: c.text },
+    }));
+    await qdrant("PUT", `/collections/${COLLECTION}/points?wait=true`, { points });
+    console.log(`uploaded ${Math.min(i + 64, chunks.length)}/${chunks.length}`);
+  }
+}
