@@ -1,18 +1,22 @@
 # Ask OLake
 
-Chat assistant for the [OLake](https://olake.io) docs. Built for Hacktoberfest Hack Day Bengaluru x OLake.
+Chat assistant for the [OLake](https://olake.io) docs, built for Hacktoberfest Hack Day Bengaluru x OLake.
 
-It answers questions about OLake only from the official docs and blog, gives the source links, and says clearly when something is not supported or not in the docs.
+It answers questions about OLake only from the official docs and blog, cites the source pages, and says clearly when something is not supported or not in the docs.
 
-- `POST /ask` - the API
-- `GET /model` - shows which LLM is being used
-- `/` - chat page
-- `/widget.js` - embeddable chat widget
+**Live:** https://hackthon-olake.vercel.app
+
+| Endpoint | What it does |
+|---|---|
+| `POST /ask` | the API: `{question}` -> `{answer, sources}` |
+| `GET /model` | shows which LLM provider and models are in use |
+| `/` | chat page |
+| `/widget.js` | embeddable chat widget |
 
 ## API
 
 ```bash
-curl -X POST https://<your-app>.vercel.app/ask \
+curl -X POST https://hackthon-olake.vercel.app/ask \
   -H "Content-Type: application/json" \
   -d '{"question": "Which source databases can OLake ingest data from?"}'
 ```
@@ -24,41 +28,95 @@ curl -X POST https://<your-app>.vercel.app/ask \
 }
 ```
 
-Errors return the same shape: `400` for a bad body, `429` when rate limited, `503` when the LLM is down (the answer then lists the most relevant doc links instead).
+| Status | When |
+|---|---|
+| `200` | answer (also used for refusals) |
+| `400` | missing / empty question, bad JSON, question over 1000 chars |
+| `429` | more than 20 requests per minute from one IP |
+| `503` | LLM down, answer then lists the most relevant doc links |
+
+Errors use the same `{answer, sources}` shape so clients don't need special handling. CORS is open so the widget works from any docs domain.
 
 ## Embed in a docs site
 
 ```html
-<script src="https://<your-app>.vercel.app/widget.js" defer></script>
+<script src="https://hackthon-olake.vercel.app/widget.js" defer></script>
 ```
 
-This adds a floating "Ask OLake" button that opens the chat in an iframe, so it doesn't clash with the host page's CSS.
+Adds a floating "Ask OLake" button that opens the chat in an iframe, so it never clashes with the host page's CSS. The chat supports markdown, highlighted code blocks with a copy button, source link chips, and works on mobile.
 
-## How it works
+## Architecture
 
 ```
-question
-  -> validate + rate limit (20 req/min per IP)
-  -> guardrails: prompt injection / secrets / off-topic -> fixed reply, no LLM call
-  -> search: Qdrant hybrid (dense + BM25, RRF) + pinned pages for known topics
-             (falls back to local BM25 with MiniSearch if Qdrant is down)
-  -> LLM with top 6 chunks, must cite them as [1], [2]
-  -> sources = urls of the chunks it cited
+                  OFFLINE (scripts/ingest.mjs)
+  olake-docs repo (docs + blog, 210 pages)
+        -> clean MDX, inline shared snippets
+        -> split by heading, ~1500 chars (~2950 chunks, each with its olake.io URL)
+        -> data/chunks.json  +  Qdrant collection (dense + BM25 vectors)
+
+                  ONLINE (app/ask/route.ts)
+  POST /ask
+    1. validate input, rate limit
+    2. guardrails: injection / secrets / off-topic / unsupported system -> fixed reply, no LLM call
+    3. retrieve (lib/search.ts)
+         pinned doc page for known topics (best 4 chunks of that page)
+       + Qdrant hybrid search: dense (all-minilm-l6-v2) + bm25, fused with RRF
+         (falls back to local BM25 with MiniSearch if Qdrant fails)
+       -> up to 10 chunks
+    4. LLM (lib/llm.ts) with numbered chunks, must cite them as [1], [2]
+    5. mask any key-like text, sources = urls of the cited chunks
 ```
 
-**Data.** `scripts/ingest.mjs` reads the [olake-docs](https://github.com/datazip-inc/olake-docs) repo (docs + blog, ~210 pages). Shared MDX snippets are inlined, JSX is stripped, and pages are split by heading into ~1500 char chunks (~2900 chunks). Every chunk keeps its page URL, which is built from the file path / slug the same way Docusaurus does. Chunks are saved to `data/chunks.json` and uploaded to Qdrant.
+### RAG pipeline and chunking
 
-**Search.** Qdrant Cloud Inference makes the embeddings (`all-minilm-l6-v2` dense + `qdrant/bm25` sparse), so there is no separate embedding API. Both are queried and fused with RRF in one request. Keyword search matters a lot here because questions use exact names like `binlog_format` or `_op_type`. For a few core topics (sync modes, catalogs, CDC setup...) the matching doc page is always added, since those pages are the source of truth.
+`scripts/ingest.mjs` reads the [olake-docs](https://github.com/datazip-inc/olake-docs) repo directly instead of scraping the site, so the text is clean. For each page it:
 
-**LLM.** One small `fetch` wrapper in `lib/llm.ts`, switched by `LLM_PROVIDER`:
-- `openrouter` (final): `z-ai/glm-4.7-flash`, falls back to `google/gemini-2.5-flash-lite` then `deepseek/deepseek-v4.1-flash` using OpenRouter's `models` param. One retry on 429.
-- `groq`: `llama-3.3-70b-versatile`, used only during development to save the hackathon credit.
+- reads the frontmatter (title, slug),
+- inlines shared MDX snippets (config examples live in `docs/shared/` and are imported into pages),
+- strips imports, JSX components, images and comments,
+- builds the real page URL from the file path / slug the same way Docusaurus does (checked against the sitemap),
+- splits at `#`/`##`/`###` headings into chunks of ~1500 chars. Each chunk starts with `Page title > Section heading` so even a small chunk has context.
 
-**Cost.** `max_tokens: 500`, `reasoning: none`, temperature 0.1, only top 6 chunks in the prompt, and injection / off-topic questions never reach the LLM.
+### Retrieval: hybrid search
 
-**Honesty.** The prompt has the fixed list of 8 sources and 2 destinations. Anything else must be answered with "not supported" and no setup steps. If the chunks don't have the answer it must say "I couldn't find this in the OLake docs" and point to the community Slack.
+- **Dense vectors** (`sentence-transformers/all-minilm-l6-v2`) match meaning, e.g. "make Postgres stream changes" -> logical replication.
+- **BM25 sparse vectors** (`qdrant/bm25`) match exact terms. This matters a lot here because users ask about exact names like `binlog_format`, `wal_level` or `_op_type`.
+- Both run in one Qdrant query and are fused with **Reciprocal Rank Fusion**.
+- Embeddings are made by **Qdrant Cloud Inference**, so there is no separate embedding API or key.
+- **Pinned pages:** some topics have one source-of-truth page (sync modes -> terminology, catalogs -> compatibility page, Postgres CDC -> generic setup...). For those, the best 4 sections of that page are always added, using topic keywords to pick the right sections.
+- **Fallback:** if Qdrant is down or not configured, the same chunks are searched locally with MiniSearch (BM25, stopwords removed, docs ranked above blog posts). The API keeps working without Qdrant.
 
-**Security.** Keys only live in env vars. Regex guardrails catch "ignore instructions / system prompt / api key" style questions before the LLM. The user question is wrapped in `<question>` tags and the prompt says that text can't change the rules. Any key-like string in the output is masked.
+## Model routing, fallbacks and cost
+
+`lib/llm.ts` is one `fetch` wrapper, the provider is picked by `LLM_PROVIDER`:
+
+- **`openrouter`** (production): `z-ai/glm-4.7-flash` first. OpenRouter's `models` param falls back automatically to `google/gemini-2.5-flash-lite` and then `deepseek/deepseek-v4.1-flash` if a model errors. On `429` we wait (using `retry-after`) and retry.
+- **`groq`**: used only during development so we didn't spend the hackathon credit while testing.
+- If every model fails, `/ask` returns `503` with links to the best matching doc pages, so the user still gets something useful.
+
+Token and cost control ($3 credit):
+
+- `max_tokens: 500`, `reasoning: { effort: "none" }`, temperature 0.1
+- only the top chunks go in the prompt, never whole pages
+- injection, off-topic and unsupported-system questions are answered without calling the LLM at all
+- `GET /model` shows the active provider, so it's easy to check production uses the provided models
+
+## Accuracy and honesty
+
+- The prompt says to answer only from the excerpts, keep exact config / command names, and cite every excerpt used.
+- It has the fixed list of the 8 supported sources and 2 destinations (that list comes from a React component on the docs site that isn't in the markdown).
+- Questions about systems OLake doesn't have (Cassandra, Delta Lake, Hudi, Redis...) get a fixed reply: "**X is not supported by OLake**" plus what is supported. No setup steps, no LLM call.
+- If the excerpts don't have the answer, the model must say "I couldn't find this in the OLake docs" and point to the [community Slack](https://olake.io/docs/community/channels/) instead of guessing.
+- `sources` are only the pages the answer actually cited.
+
+## Prompt security and injection defense
+
+- **Keys** only live in environment variables, never in the repo or the client.
+- **Pre-LLM guardrails:** requests to reveal our prompt, rules or keys ("ignore previous instructions", "print your system prompt", "your API key"...) get a fixed refusal and never reach the model. Normal questions like "how do I set the API key for the REST catalog?" are still answered.
+- **Off-topic** requests (poems, jokes, songs...) get a polite redirect to OLake topics.
+- **Prompt isolation:** the user's text is wrapped in `<question>` tags and the system prompt says that text can't change the rules.
+- **Output check:** anything that looks like a key (`sk-or-v1...`, `gsk_...`, JWTs) is masked before the answer is returned.
+- **Input limits:** 1000 characters max, JSON only, and per-IP rate limiting.
 
 ## Run locally
 
@@ -68,35 +126,52 @@ cp .env.example .env.local   # fill in keys
 npm run dev                  # http://localhost:3000
 ```
 
-Run the 20 benchmark questions:
+Run the 20 benchmark questions (checks the must-mention words):
 
 ```bash
 node scripts/eval.mjs http://localhost:3000
 ```
 
-Rebuild the docs index (only needed when docs change):
+Build / refresh the docs index (needed once, and whenever the docs change):
 
 ```bash
 git clone --depth 1 https://github.com/datazip-inc/olake-docs ../olake-docs
 node --env-file=.env.local scripts/ingest.mjs ../olake-docs
 ```
 
-## Deploy on Vercel
+## Deploy (Vercel)
 
-1. Import this repo on vercel.com/new (Next.js is auto detected, no config needed).
-2. Add env vars: `LLM_PROVIDER=openrouter`, `OPENROUTER_API_KEY`, `QDRANT_URL`, `QDRANT_API_KEY`.
-3. Deploy. Check `GET /model` shows `openrouter`.
+1. Import this repo on vercel.com/new. Next.js is detected automatically, no extra config needed.
+2. Add environment variables:
+   ```
+   LLM_PROVIDER=openrouter
+   OPENROUTER_API_KEY=...
+   QDRANT_URL=...
+   QDRANT_API_KEY=...
+   ```
+3. Deploy, then check `GET /model` shows `openrouter`.
+4. Make sure Deployment Protection doesn't block the production URL.
+
+Every push to `main` redeploys automatically.
+
+## Design choices
+
+- **Next.js on Vercel:** API, chat UI and widget in one small project, zero-config deploys.
+- **Hybrid search instead of only vectors:** questions use exact technical names, pure embeddings blur them.
+- **Qdrant + local fallback:** better retrieval when Qdrant is up, still working when it isn't.
+- **Guardrails before the LLM:** safer and cheaper than asking the model to refuse.
+- **No framework (LangChain etc.):** the whole pipeline is a few hundred lines and easy to follow.
 
 ## Files
 
 ```
-app/ask/route.ts     /ask endpoint
+app/ask/route.ts     /ask endpoint: validation, guardrails, prompt, sources
 app/model/route.ts   /model endpoint
 app/page.tsx         chat UI
-lib/search.ts        qdrant + local search
-lib/llm.ts           groq / openrouter call
+lib/search.ts        Qdrant hybrid search, pinned pages, local fallback
+lib/llm.ts           Groq / OpenRouter call with fallbacks
 public/widget.js     embed script
-scripts/ingest.mjs   docs -> chunks -> qdrant
+scripts/ingest.mjs   docs -> chunks -> Qdrant
 scripts/eval.mjs     runs the 20 test questions
 data/chunks.json     docs chunks
 ```
