@@ -65,6 +65,7 @@ export async function POST(req: Request) {
   if (OFFTOPIC.test(question) && !/olake/i.test(question)) return reply(REFUSE_OFFTOPIC);
 
   const found = await search(question);
+  const top = [...new Map(found.map((c) => [c.url, c])).values()].slice(0, 3);
   const context = found.map((c, i) => `[${i + 1}] (${c.url})\n${c.text}`).join("\n\n");
 
   let answer: string;
@@ -78,8 +79,8 @@ export async function POST(req: Request) {
     console.error(e);
     // llm is down, at least point to the right docs
     return reply(
-      "The assistant is busy right now. These docs pages should help:\n\n" + found.slice(0, 3).map((c) => `- [${c.title}](${c.url})`).join("\n"),
-      [...new Set(found.slice(0, 3).map((c) => c.url))],
+      "The assistant is busy right now. These docs pages should help:\n\n" + top.map((c) => `- [${c.title}](${c.url})`).join("\n"),
+      top.map((c) => c.url),
       503
     );
   }
