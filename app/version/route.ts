@@ -1,6 +1,10 @@
-import { provider, models } from "@/lib/llm";
+export const dynamic = "force-dynamic";
 
-// same info as /model, the submission form asks for /version
+// git commit that vercel built this deployment from
 export function GET() {
-  return Response.json({ name: "ask-olake", version: "1.0.0", provider, primary: models[0], fallbacks: models.slice(1) });
+  return Response.json({
+    commit: process.env.VERCEL_GIT_COMMIT_SHA || "local",
+    message: process.env.VERCEL_GIT_COMMIT_MESSAGE || "",
+    branch: process.env.VERCEL_GIT_COMMIT_REF || "",
+  });
 }
