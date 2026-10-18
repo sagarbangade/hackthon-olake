@@ -65,10 +65,10 @@ async function qdrantSearch(q: string, limit: number): Promise<Chunk[]> {
   return data.result.points.map((p: any) => ({ id: p.id, ...p.payload }));
 }
 
-export async function search(q: string, limit = 10): Promise<Chunk[]> {
+export async function search(q: string, limit = 12): Promise<Chunk[]> {
   const pinned = PINNED.filter(([re]) => re.test(q))
     .slice(0, 2)
-    .flatMap(([, url, words]) => localSearch(words, 4, url));
+    .flatMap(([, url, words]) => localSearch(words, 6, url));
 
   let found: Chunk[] = [];
   if (QDRANT_URL && QDRANT_API_KEY) {
