@@ -20,29 +20,37 @@ export const models = cfg.models;
 type Msg = { role: "system" | "user" | "assistant"; content: string };
 
 export async function chat(messages: Msg[]): Promise<{ text: string; model: string }> {
+  let lastError: unknown;
   for (let attempt = 0; attempt < 3; attempt++) {
-    const currentModel = provider === "groq" ? models[attempt % models.length] : models[0];
-    const body: any = { model: currentModel, messages, max_tokens: 500, temperature: 0.1 };
+    // each retry starts from the next model, so a slow or broken model is skipped
+    const current = models[attempt % models.length];
+    const body: any = { model: current, messages, max_tokens: 500, temperature: 0.1 };
     if (provider === "openrouter") {
-      body.models = models.slice(1); // openrouter falls back to these if the first one fails
+      body.models = models.filter((m) => m !== current); // openrouter falls back to these on errors
       body.reasoning = { effort: "none" };
     }
 
-    const res = await fetch(cfg.url, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(25000),
-    });
-    if (res.status === 429 && attempt < 2) {
-      const retrySec = parseFloat(res.headers.get("retry-after") || "2");
-      const waitMs = Math.min(Math.max(retrySec * 1000, 1500), 6000);
-      await new Promise((r) => setTimeout(r, waitMs));
-      continue;
+    try {
+      const res = await fetch(cfg.url, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(12000),
+      });
+      if (res.status === 429) {
+        const wait = parseFloat(res.headers.get("retry-after") || "2") * 1000;
+        await new Promise((r) => setTimeout(r, Math.min(Math.max(wait, 1500), 6000)));
+        throw new Error("llm 429");
+      }
+      if (!res.ok) throw new Error(`llm ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      const data = await res.json();
+      const text = data.choices?.[0]?.message?.content?.trim();
+      if (text) return { text, model: data.model };
+      throw new Error("llm empty answer");
+    } catch (e) {
+      lastError = e; // timeout, 429, 5xx or empty -> try the next model
+      console.error(`model ${current} failed:`, e);
     }
-    if (!res.ok) throw new Error(`llm ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    const data = await res.json();
-    return { text: data.choices?.[0]?.message?.content?.trim() || "", model: data.model };
   }
-  throw new Error("llm rate limited");
+  throw lastError;
 }
