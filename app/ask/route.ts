@@ -7,8 +7,8 @@ const COMMUNITY = "https://olake.io/docs/community/channels/";
 const SYSTEM = `You are "Ask OLake", a helpful assistant for the OLake documentation.
 
 Rules:
-1. Answer only from the numbered excerpts given to you. Be short and clear, use markdown (lists, code blocks).
-2. Keep the exact names from the docs: config keys, commands, flags, column names.
+1. Answer only from the numbered excerpts given to you. Use markdown bullet lists and code blocks, no tables. Be short.
+2. Be complete: name every setting, command, flag, privilege and column from the excerpts that answers the question, with their exact names. Mention important limits too (for example what is not captured).
 3. Cite the excerpts you used inline like [1] or [2].
 4. OLake sources (exactly 8): PostgreSQL, MySQL, MongoDB, Oracle, MSSQL (SQL Server), IBM DB2, Apache Kafka, Amazon S3.
    OLake destinations (only 2): Apache Iceberg tables (through Glue, Hive, JDBC or REST catalogs) and Parquet files on object storage like Amazon S3.
@@ -25,6 +25,11 @@ const REFUSE_OFFTOPIC =
 const INJECTION = /(ignore|forget|disregard).{0,30}(instruction|rule|prompt)|system prompt|api[\s_-]?key|your (instructions|rules|prompt)|jailbreak|developer mode|\bDAN\b/i;
 const OFFTOPIC = /\b(poem|poetry|song|lyrics|joke|story|haiku|essay|recipe|rap)\b/i;
 const SECRET = /(sk-or-v1|gsk_|eyJhbGci)[\w.-]*/g;
+// things people often ask about that olake does not have
+const UNSUPPORTED = /\b(cassandra|delta lake|delta tables?|hudi|redis|elasticsearch|dynamodb|couchbase|neo4j|bigtable|cosmos ?db)\b/i;
+const SUPPORTED =
+  "OLake supports these sources: PostgreSQL, MySQL, MongoDB, Oracle, MSSQL (SQL Server), IBM DB2, Apache Kafka and Amazon S3. " +
+  "It writes to Apache Iceberg tables and Parquet files (for example on Amazon S3).";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -63,6 +68,12 @@ export async function POST(req: Request) {
 
   if (INJECTION.test(question)) return reply(REFUSE_SECRET);
   if (OFFTOPIC.test(question) && !/olake/i.test(question)) return reply(REFUSE_OFFTOPIC);
+
+  const missing = question.match(UNSUPPORTED)?.[0];
+  if (missing) {
+    const name = missing.replace(/\b\w/g, (c: string) => c.toUpperCase());
+    return reply(`**${name} is not supported by OLake.**\n\n${SUPPORTED}`, [DOCS_HOME]);
+  }
 
   const found = await search(question);
   const top = [...new Map(found.map((c) => [c.url, c])).values()].slice(0, 3);
