@@ -22,7 +22,7 @@ const REFUSE_SECRET =
 const REFUSE_OFFTOPIC =
   "I'm Ask OLake, I can only help with questions about OLake (connectors, sync modes, Iceberg, deployment, CLI...). What would you like to know about OLake?";
 
-const INJECTION = /(ignore|forget|disregard).{0,30}(instruction|rule|prompt)|system prompt|api[\s_-]?key|your (instructions|rules|prompt)|jailbreak|developer mode|\bDAN\b/i;
+const INJECTION = /(ignore|forget|disregard).{0,30}(instruction|rule|prompt)|system prompt|your (instructions|rules|prompt|api[\s_-]?keys?|keys?|secrets?)|(reveal|print|show|leak|tell me|give me).{0,25}(prompt|api[\s_-]?key|secret|token)|(groq|openrouter)[\s_-]?api[\s_-]?key|gsk_|sk-or-|jailbreak|developer mode|\bDAN\b/i;
 const OFFTOPIC = /\b(poem|poetry|song|lyrics|joke|story|haiku|essay|recipe|rap)\b/i;
 const SECRET = /(sk-or-v1|gsk_|eyJhbGci)[\w.-]*/g;
 // things people often ask about that olake does not have
