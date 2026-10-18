@@ -6,19 +6,21 @@ export type Chunk = { id: number; url: string; title: string; text: string };
 const { QDRANT_URL, QDRANT_API_KEY } = process.env;
 const DOCS = "https://olake.io/docs/";
 
-// some topics live on one known page, always pull that page in
-const PINNED: [RegExp, string][] = [
-  [/sync mode|incremental|full refresh|upsert|append|normaliz/i, DOCS + "understanding/terminologies/olake/"],
-  [/column|_op_type|_olake|metadata/i, DOCS + "understanding/terminologies/general/"],
-  [/continuous|daemon|real.?time|always running/i, "https://olake.io/blog/olake-architecture-deep-dive/"],
-  [/catalog|glue|hive|nessie|polaris|unity|lakekeeper/i, DOCS + "understanding/compatibility-catalogs/"],
-  [/query engine|trino|athena|spark|duckdb|snowflake/i, DOCS + "understanding/compatibility-engines/"],
-  [/mysql/i, DOCS + "connectors/mysql/setup/generic/"],
-  [/postgres/i, DOCS + "connectors/postgres/setup/generic/"],
-  [/mongo/i, DOCS + "connectors/mongodb/cdc_setup/"],
-  [/install|docker|login|password|olake ui/i, DOCS + "install/olake-ui/"],
-  [/cli|command|flag/i, DOCS + "community/commands-and-flags/"],
-  [/cron|schedul/i, DOCS + "getting-started/job-level-properties/"],
+// some topics live on one known page, always pull that page in.
+// the extra words help pick the right section of that page
+const PINNED: [RegExp, string, string][] = [
+  [/sync mode|incremental|full refresh/i, DOCS + "understanding/terminologies/olake/", "sync modes full refresh cdc incremental cursor state deletes"],
+  [/upsert|append/i, DOCS + "understanding/terminologies/olake/", "upsert append default kafka history latest"],
+  [/column|_op_type|_olake|metadata/i, DOCS + "understanding/terminologies/general/", "_op_type _olake_id _olake_timestamp _cdc_timestamp"],
+  [/continuous|daemon|real.?time|always running/i, "https://olake.io/blog/olake-architecture-deep-dive/", "cdc initial_wait_time bounded session exits schedule"],
+  [/catalog|glue|hive|nessie|polaris|unity|lakekeeper/i, DOCS + "understanding/compatibility-catalogs/", "glue hive jdbc rest catalog"],
+  [/query engine|trino|athena|spark|duckdb|snowflake/i, DOCS + "understanding/compatibility-engines/", "spark trino athena duckdb snowflake"],
+  [/mysql/i, DOCS + "connectors/mysql/setup/generic/", "binlog_format binlog_row_image binlog_row_metadata server-id create replication user grant"],
+  [/postgres/i, DOCS + "connectors/postgres/setup/generic/", "wal_level logical pgoutput max_replication_slots max_wal_senders replication slot publication"],
+  [/mongo/i, DOCS + "connectors/mongodb/cdc_setup/", "replica set oplog"],
+  [/install|docker|login|password|olake ui/i, DOCS + "install/olake-ui/", "docker compose localhost:8000 admin password x-signup-defaults"],
+  [/\bcli\b|command|flag/i, DOCS + "community/commands-and-flags/", "check spec clear-destination commands"],
+  [/cron|schedul/i, DOCS + "getting-started/job-level-properties/", "cron 5-field 7-field quartz"],
 ];
 
 const STOP = new Set(
@@ -63,8 +65,10 @@ async function qdrantSearch(q: string, limit: number): Promise<Chunk[]> {
   return data.result.points.map((p: any) => ({ id: p.id, ...p.payload }));
 }
 
-export async function search(q: string, limit = 6): Promise<Chunk[]> {
-  const pinned = PINNED.filter(([re]) => re.test(q)).slice(0, 2).flatMap(([, url]) => localSearch(q, 2, url));
+export async function search(q: string, limit = 10): Promise<Chunk[]> {
+  const pinned = PINNED.filter(([re]) => re.test(q))
+    .slice(0, 2)
+    .flatMap(([, url, words]) => localSearch(words, 4, url));
 
   let found: Chunk[] = [];
   if (QDRANT_URL && QDRANT_API_KEY) {
